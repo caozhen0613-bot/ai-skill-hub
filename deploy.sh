@@ -10,61 +10,19 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()  { echo -e "${RED}[ERR]${NC}   $*"; }
-step() { echo -e "\n${BLUE}=== $* ===${NC}"; }
 
 PROJECT_DIR="/opt/ai-skill-hub"
-GITHUB_REPO=""
-STEP_TOTAL=7
-STEP_CURRENT=0
-
-progress() {
-  STEP_CURRENT=$((STEP_CURRENT + 1))
-  echo -e "${BLUE}[${STEP_CURRENT}/${STEP_TOTAL}]${NC} $*"
-}
-
-usage() {
-  cat <<EOF
-用法: $0 [选项]
-
-选项:
-  -r, --repo URL      Git 仓库地址 (必填, 仅首次)
-  -d, --dir PATH      项目目录 (默认: /opt/ai-skill-hub)
-  --skip-swap         跳过 swap 创建
-  --skip-docker       跳过 Docker 安装
-  -h, --help          显示帮助
-
-示例:
-  # 首次部署
-  $0 -r git@github.com:user/ai-skill-hub.git
-
-  # 更新部署 (已存在代码)
-  $0
-EOF
-  exit 0
-}
-
-SKIP_SWAP=false
-SKIP_DOCKER=false
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -r|--repo) GITHUB_REPO="$2"; shift 2 ;;
-    -d|--dir)  PROJECT_DIR="$2"; shift 2 ;;
-    --skip-swap) SKIP_SWAP=true; shift ;;
-    --skip-docker) SKIP_DOCKER=true; shift ;;
-    -h|--help) usage ;;
-    *) err "未知参数: $1"; usage ;;
-  esac
-done
+GITHUB_REPO="https://github.com/caozhen0613-bot/ai-skill-hub.git"
+PG_PASSWORD="ai-skill-hub@2026"
+SITE_URL="http://39.105.67.38"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║       AI Skill Hub  一键部署脚本         ║"
+echo "║     AI Skill Hub  国内网络一键部署       ║"
 echo "║   适配: Ubuntu 22.04 / 阿里云 ECS        ║"
+echo "║   策略: 主机直装 (不用Docker)             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-
-progress "检查系统环境"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   err "请以 root 身份运行: sudo bash deploy.sh"
@@ -75,176 +33,140 @@ MEM_TOTAL=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 MEM_MB=$((MEM_TOTAL / 1024))
 log "内存: ${MEM_MB} MiB"
 
-DISK_FREE=$(df /opt --output=avail 2>/dev/null | tail -1 || df / --output=avail | tail -1)
-DISK_MB=$((DISK_FREE / 1024))
-log "可用磁盘: ${DISK_MB} MiB"
+STEPS=6
+step() { echo -e "\n${BLUE}[$((++I))/6]${NC} $*"; }
+I=0
 
-if [[ $DISK_MB -lt 5120 ]]; then
-  warn "磁盘剩余空间 < 5 GiB, 建议扩容后再部署"
-fi
+# ========== 1. 安装 Node.js 22 ==========
+step "安装 Node.js 22"
 
-progress "安装系统依赖"
-
-if command -v docker &>/dev/null && $SKIP_DOCKER; then
-  log "Docker 已安装, 跳过"
+if command -v node &>/dev/null && node -v | grep -q "v22"; then
+  log "Node.js $(node -v) 已安装, 跳过"
 else
-  if ! command -v docker &>/dev/null; then
-    log "正在安装 Docker..."
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable docker
-    systemctl start docker
-  fi
-
-  if ! docker compose version &>/dev/null 2>&1; then
-    log "安装 docker compose 插件..."
-    apt-get update -qq && apt-get install -y -qq docker-compose-plugin
-  fi
+  log "通过 NodeSource 国内源安装..."
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y nodejs
+  log "Node.js $(node -v) 安装完成"
 fi
 
-log "Docker 版本: $(docker --version)"
-log "Compose 版本: $(docker compose version 2>/dev/null || echo 'N/A')"
+npm config set registry https://registry.npmmirror.com
+npm config set disturl https://npmmirror.com/dist
+log "npm 镜像源已切换到 npmmirror.com"
 
-progress "配置 swap 防止内存溢出"
+# ========== 2. 安装 PostgreSQL 16 ==========
+step "安装 PostgreSQL 16"
 
-SWAP_TOTAL=$(free -m | awk '/^Swap:/ {print $2}')
-if [[ $SKIP_SWAP == true ]]; then
-  log "跳过 swap 创建"
-elif [[ $SWAP_TOTAL -ge 1024 ]]; then
-  log "Swap 已存在 (${SWAP_TOTAL} MiB), 跳过"
+if command -v psql &>/dev/null && pg_isready &>/dev/null 2>&1; then
+  log "PostgreSQL 已在运行, 跳过"
 else
-  log "创建 2 GiB swap 文件..."
-  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
-  chmod 600 /swapfile
-  mkswap /swapfile
-  swapon /swapfile
-  if ! grep -q /swapfile /etc/fstab; then
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  fi
-  log "Swap 配置完成: 2 GiB"
+  apt-get update -qq
+  apt-get install -y -qq postgresql-16 postgresql-client-16
+  systemctl enable postgresql
+  systemctl start postgresql
 fi
 
-progress "获取项目代码"
+log "配置数据库..."
+su - postgres -c "psql -c \"ALTER USER postgres WITH PASSWORD '${PG_PASSWORD}';\" 2>/dev/null" || true
+
+if su - postgres -c "psql -lqt | cut -d \| -f 1 | grep -qw ai-skill-hub" 2>/dev/null; then
+  log "数据库 ai-skill-hub 已存在"
+else
+  su - postgres -c "createdb ai-skill-hub"
+  log "数据库 ai-skill-hub 创建完成"
+fi
+
+# 允许本地密码登录
+PG_HBA=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+if [[ -n "$PG_HBA" ]]; then
+  sed -i 's/local   all             all                                     peer/local   all             all                                     md5/' "$PG_HBA"
+  systemctl restart postgresql
+fi
+
+# ========== 3. 获取代码 ==========
+step "获取项目代码"
 
 if [[ -d "$PROJECT_DIR/.git" ]]; then
   log "项目已存在, 拉取最新代码..."
   cd "$PROJECT_DIR"
-  git fetch origin
-  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-  git reset --hard "origin/$CURRENT_BRANCH"
-  log "代码已更新到 $(git rev-parse --short HEAD)"
+  git pull origin main 2>/dev/null || git reset --hard origin/main
+  log "代码已更新: $(git rev-parse --short HEAD)"
 else
-  if [[ -z "$GITHUB_REPO" ]]; then
-    err "首次部署需要 -r 参数指定 Git 仓库地址"
-    exit 1
-  fi
-  log "克隆仓库: $GITHUB_REPO"
-  mkdir -p "$(dirname "$PROJECT_DIR")"
+  log "克隆仓库..."
+  mkdir -p /opt
+  rm -rf "$PROJECT_DIR"
   git clone "$GITHUB_REPO" "$PROJECT_DIR"
   cd "$PROJECT_DIR"
   log "代码克隆完成"
 fi
 
-progress "配置环境变量"
+# ========== 4. 安装依赖 ==========
+step "安装项目依赖"
 
 cd "$PROJECT_DIR"
-ENV_FILE="$PROJECT_DIR/.env"
+rm -rf node_modules package-lock.json
+npm install
+npx prisma generate
+log "依赖安装完成"
 
-if [[ -f "$ENV_FILE" ]]; then
-  log ".env 文件已存在, 跳过创建"
-else
-  log "创建 .env 文件..."
+# ========== 5. 配置环境 + 初始化数据库 ==========
+step "初始化数据库与构建"
 
-  if [[ -f ".env.example" ]]; then
-    cp .env.example "$ENV_FILE"
+AUTH_SECRET=$(openssl rand -base64 48)
 
-    AUTH_SECRET=$(openssl rand -base64 48)
-    sed -i "s|AUTH_SECRET=.*|AUTH_SECRET=\"$AUTH_SECRET\"|" "$ENV_FILE"
-    log "AUTH_SECRET 已自动生成"
-  else
-    cat > "$ENV_FILE" << 'ENVEOF'
-DATABASE_URL="postgresql://postgres:__CHANGE_ME__@db:5432/ai-skill-hub?schema=public"
-AUTH_SECRET="__CHANGE_ME__"
+cat > "$PROJECT_DIR/.env" << ENVEOF
+DATABASE_URL="postgresql://postgres:${PG_PASSWORD}@localhost:5432/ai-skill-hub?schema=public"
+AUTH_SECRET="${AUTH_SECRET}"
 AUTH_GITHUB_ID=""
 AUTH_GITHUB_SECRET=""
-NEXT_PUBLIC_SITE_URL="http://localhost"
-R2_ENDPOINT=""
-R2_ACCESS_KEY_ID=""
-R2_SECRET_ACCESS_KEY=""
-R2_BUCKET_NAME="ai-skill-hub"
+NEXT_PUBLIC_SITE_URL="${SITE_URL}"
 ENVEOF
-  fi
 
-  warn "请编辑 $ENV_FILE 填入必要配置 (GitHub OAuth 等)"
-  warn "编辑完成后按 Ctrl+X 退出"
-  echo ""
-  read -rp "按回车打开编辑器..." _
-  ${EDITOR:-nano} "$ENV_FILE"
+log ".env 配置完成"
+log "AUTH_SECRET: ${AUTH_SECRET:0:16}..."
 
-  POSTGRES_PASSWORD=$(grep -oP 'POSTGRES_PASSWORD=\K.*' "$ENV_FILE" 2>/dev/null || echo "")
-  if [[ -z "$POSTGRES_PASSWORD" ]]; then
-    warn "未找到 POSTGRES_PASSWORD, 将使用默认值"
-  fi
-fi
+npx prisma db push
+log "数据库表创建完成"
 
-log "加载环境变量..."
-set -a
-# shellcheck source=/dev/null
-source "$ENV_FILE" 2>/dev/null || true
-set +a
+npx tsx prisma/seed.ts
+log "种子数据导入完成"
 
-progress "构建并启动服务"
+log "构建生产版本 (约 1-2 分钟)..."
+npm run build
+log "构建完成"
 
-log "构建 Docker 镜像 (首次约 3-5 分钟)..."
-docker compose build --no-cache app 2>&1 | tail -20
+# ========== 6. 启动服务 ==========
+step "启动服务"
 
-log "启动所有服务..."
-docker compose up -d
+npm install -g pm2 --registry=https://registry.npmmirror.com
+pm2 delete ai-skill-hub 2>/dev/null || true
 
-log "等待数据库就绪..."
-RETRIES=0
-while [[ $RETRIES -lt 30 ]]; do
-  if docker compose exec -T db pg_isready -U "${POSTGRES_USER:-postgres}" &>/dev/null; then
-    log "数据库已就绪"
-    break
-  fi
-  sleep 2
-  RETRIES=$((RETRIES + 1))
-done
+pm2 start ./node_modules/.bin/next --name "ai-skill-hub" -- start -p 3000
+pm2 startup
+pm2 save
 
-if [[ $RETRIES -ge 30 ]]; then
-  err "数据库启动超时, 请检查: docker compose logs db"
-  exit 1
-fi
+sleep 10
 
-progress "初始化数据库"
-
-log "执行 prisma db push..."
-docker compose exec -T app npx prisma db push
-
-log "灌入种子数据..."
-docker compose exec -T app npx tsx prisma/seed.ts
-
-progress "部署完成!"
+# 最终验证
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null || echo "000")
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║           部署成功! 🎉                    ║"
+echo "║           部署完成                        ║"
 echo "╠══════════════════════════════════════════╣"
 echo "║                                          ║"
-echo "║  访问地址: http://$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
-echo "║  管理后台: http://$(curl -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')/admin"
+echo "║  HTTP 状态: ${STATUS}                         ║"
+echo "║  访问地址 : ${SITE_URL}      ║"
+echo "║  管理后台 : ${SITE_URL}/admin              ║"
 echo "║                                          ║"
 echo "║  常用命令:                                ║"
-echo "║    docker compose ps         查看服务状态  ║"
-echo "║    docker compose logs -f app 查看应用日志  ║"
-echo "║    docker compose restart app 重启应用     ║"
-echo "║    docker compose down        停止服务     ║"
-echo "║    docker compose up -d       启动服务     ║"
+echo "║    pm2 status                 查看状态    ║"
+echo "║    pm2 logs ai-skill-hub      查看日志    ║"
+echo "║    pm2 restart ai-skill-hub   重启服务    ║"
 echo "║                                          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
 log "下一步:"
-log "  1. 打开阿里云安全组, 放行 80 / 443 端口"
-log "  2. 配置域名 DNS 解析到本机公网 IP"
-log "  3. 如需 HTTPS, 配置 SSL 证书到 ./ssl/ 目录"
+log "  1. 阿里云安全组放行 3000 端口 (或 80 端口)"
+log "  2. 用公网 IP ${SITE_URL} 访问网站"
+log "  3. 如需用域名, 配置 DNS 解析到 39.105.67.38"
