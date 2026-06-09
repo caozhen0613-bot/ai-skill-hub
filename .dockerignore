@@ -1,0 +1,14 @@
+node_modules
+.git
+.next
+.vercel
+*.md
+.env*
+docker-compose.yml
+nginx.conf
+ssl
+pgdata
+coverage
+.gitignore
+.dockerignore
+deploy.sh

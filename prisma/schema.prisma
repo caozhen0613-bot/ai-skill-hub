@@ -1,0 +1,244 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PostType {
+  ARTICLE
+  CARD
+  TEMPLATE
+}
+
+enum Status {
+  DRAFT
+  PUBLISHED
+}
+
+enum NavType {
+  PAGE
+  CATEGORY
+  EXTERNAL
+}
+
+enum StorageType {
+  DIRECT
+  LINK
+}
+
+model User {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  name        String?
+  avatar      String?
+  role        Role          @default(USER)
+  posts       Post[]
+  comments    Comment[]
+  likes       Like[]
+  bookmarks   Bookmark[]
+  resources   FileResource[]
+  auditLogs   AuditLog[]
+  versions    PostVersion[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model Post {
+  id              String         @id @default(cuid())
+  title           String
+  slug            String         @unique
+  content         String         @db.Text
+  excerpt         String?
+  coverImage      String?
+  type            PostType
+  status          Status         @default(DRAFT)
+  featured        Boolean        @default(false)
+  isPinned        Boolean        @default(false)
+  metaTitle       String?
+  metaDescription String?
+  publishedAt     DateTime?
+  author          User           @relation(fields: [authorId], references: [id])
+  authorId        String
+  tags            PostTag[]
+  comments        Comment[]
+  likes           Like[]
+  bookmarks       Bookmark[]
+  resources       FileResource[]
+  viewCount       Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  versions        PostVersion[]
+
+  @@index([authorId])
+  @@index([status, type])
+  @@index([createdAt])
+  @@index([type, status, createdAt])
+  @@index([featured])
+  @@index([isPinned])
+}
+
+model PostVersion {
+  id        String   @id @default(cuid())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId    String
+  title     String
+  content   String   @db.Text
+  excerpt   String?
+  version   Int
+  editor    User?    @relation(fields: [editorId], references: [id])
+  editorId  String?
+  createdAt DateTime @default(now())
+
+  @@index([postId])
+  @@index([postId, version])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String?
+  detail    String?  @db.Text
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model SiteConfig {
+  id              String  @id @default(cuid())
+  siteName        String  @default("AI Skill Hub")
+  siteDescription String? @db.Text
+  logo            String?
+  favicon         String?
+  primaryColor    String? @default("#3b82f6")
+  homeLayout      String? @default("default")
+  announcement    String? @db.Text
+  footerText      String?
+  socialLinks     String? @db.Text
+  updatedAt       DateTime @updatedAt
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  content   String    @db.Text
+  author    User      @relation(fields: [authorId], references: [id])
+  authorId  String
+  post      Post      @relation(fields: [postId], references: [id])
+  postId    String
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  parentId  String?
+  replies   Comment[] @relation("CommentReplies")
+  createdAt DateTime  @default(now())
+
+  @@index([postId])
+  @@index([authorId])
+  @@index([parentId])
+  @@index([postId, createdAt])
+}
+
+model Tag {
+  id       String         @id @default(cuid())
+  name     String         @unique
+  posts    PostTag[]
+  resources FileResourceTag[]
+}
+
+model PostTag {
+  post   Post @relation(fields: [postId], references: [id])
+  postId String
+  tag    Tag  @relation(fields: [tagId], references: [id])
+  tagId  String
+  @@id([postId, tagId])
+}
+
+model Like {
+  id     String @id @default(cuid())
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
+  post   Post   @relation(fields: [postId], references: [id])
+  postId String
+  @@unique([userId, postId])
+  @@index([postId])
+}
+
+model Bookmark {
+  id     String @id @default(cuid())
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
+  post   Post   @relation(fields: [postId], references: [id])
+  postId String
+  @@unique([userId, postId])
+  @@index([postId])
+}
+
+model Navigation {
+  id        String      @id @default(cuid())
+  label     String
+  slug      String?     @unique
+  type      NavType     @default(PAGE)
+  url       String?
+  icon      String?
+  badge     String?
+  target    String?     @default("_self")
+  parentId  String?
+  parent    Navigation? @relation("NavChildren", fields: [parentId], references: [id])
+  children  Navigation[] @relation("NavChildren")
+  sortOrder Int         @default(0)
+  isVisible Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@index([parentId])
+  @@index([sortOrder])
+}
+
+model FileResource {
+  id          String           @id @default(cuid())
+  title       String
+  description String?          @db.Text
+  fileType    String
+  fileSize    Int?
+  storageType StorageType      @default(DIRECT)
+  fileKey     String?          @unique
+  fileUrl     String?
+  downloadCount Int            @default(0)
+  uploadedBy  User             @relation(fields: [uploadedById], references: [id])
+  uploadedById String
+  postId      String?
+  post        Post?            @relation(fields: [postId], references: [id])
+  tags        FileResourceTag[]
+  sortOrder   Int              @default(0)
+  isVisible   Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([uploadedById])
+  @@index([postId])
+  @@index([sortOrder])
+}
+
+model FileResourceTag {
+  resource   FileResource @relation(fields: [resourceId], references: [id])
+  resourceId String
+  tag        Tag          @relation(fields: [tagId], references: [id])
+  tagId      String
+  @@id([resourceId, tagId])
+}
